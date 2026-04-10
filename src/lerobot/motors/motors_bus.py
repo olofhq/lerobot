@@ -1018,7 +1018,7 @@ class SerialMotorsBus(MotorsBusBase):
         length: int,
         motor_id: int,
         *,
-        num_retry: int = 0,
+        num_retry: int = 5,
         raise_on_error: bool = True,
         err_msg: str = "",
     ) -> tuple[int, int, int]:
@@ -1165,7 +1165,7 @@ class SerialMotorsBus(MotorsBusBase):
         err_msg: str = "",
     ) -> tuple[dict[int, int], int]:
         self._setup_sync_reader(motor_ids, addr, length)
-        for n_try in range(1 + num_retry):
+        for n_try in range(1 + 5):
             comm = self.sync_reader.txRxPacket()
             if self._is_comm_success(comm):
                 break

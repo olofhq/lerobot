@@ -63,6 +63,7 @@ class HILDatasetConfig:
 
 def teleop_has_motor_control(teleop: Teleoperator) -> bool:
     """Check if teleoperator has motor control capabilities."""
+    return True
     return all(hasattr(teleop, attr) for attr in ("enable_torque", "disable_torque", "write_goal_positions"))
 
 

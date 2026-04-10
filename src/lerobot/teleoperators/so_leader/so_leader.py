@@ -149,6 +149,25 @@ class SOLeader(Teleoperator):
         # TODO: Implement force feedback
         raise NotImplementedError
 
+    def enable_torque(self) -> None:
+        """Enable torque on the leader arm for position control."""
+        self.bus.enable_torque()
+
+    def disable_torque(self) -> None:
+        """Disable torque on the leader arm for free movement."""
+        self.bus.disable_torque()
+
+    def write_goal_positions(self, goal_positions: dict[str, float]) -> None:
+        """Write goal positions to mirror the robot's current pose onto the leader arm."""
+        goal_pos = {
+            key.removesuffix(".pos"): val
+            for key, val in goal_positions.items()
+            if key.endswith(".pos")
+        }
+        # print("leader")
+        # print(goal_pos)
+        self.bus.sync_write("Goal_Position", goal_pos)
+
     @check_if_not_connected
     def disconnect(self) -> None:
         self.bus.disconnect()
