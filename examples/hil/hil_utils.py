@@ -99,8 +99,18 @@ def teleop_smooth_move_to(teleop: Teleoperator, target_pos: dict, duration_s: fl
         time.sleep(1 / fps)
 
 
-def init_keyboard_listener():
-    """Initialize keyboard listener with HIL controls."""
+TAKEOVER_POSITION_ERROR_THRESHOLD = 0.05  # Max joint error (rad or normalized) to allow takeover
+
+
+def init_keyboard_listener(takeover_threshold: float = TAKEOVER_POSITION_ERROR_THRESHOLD):
+    """Initialize keyboard listener with HIL controls.
+
+    Args:
+        takeover_threshold: Maximum allowed joint position error (between leader and follower)
+            before the 'c' key is accepted to take control. Prevents sudden jumps when
+            the leader arm hasn't yet converged to the follower position after a pause.
+            Set to float('inf') to disable the check.
+    """
     events = {
         "exit_early": False,
         "rerecord_episode": False,
@@ -110,6 +120,10 @@ def init_keyboard_listener():
         "resume_policy": False,
         "in_reset": False,
         "start_next_episode": False,
+        "position_error": float("inf"),  # Updated externally each control loop iteration
+        "joint_position_errors": {},     # Per-joint breakdown, updated alongside position_error
+        "teleop_positions": {},          # Latest leader arm positions
+        "robot_positions": {},           # Latest follower arm positions
     }
 
     if is_headless():
@@ -124,8 +138,6 @@ def init_keyboard_listener():
                 if key in [keyboard.Key.space, keyboard.Key.right]:
                     logger.info("[HIL] Starting next episode...")
                     events["start_next_episode"] = True
-                elif hasattr(key, "char") and key.char == "c":
-                    events["start_next_episode"] = True
                 elif key == keyboard.Key.esc:
                     logger.info("[HIL] ESC - Stop recording, pushing to hub...")
                     events["stop_recording"] = True
@@ -137,7 +149,24 @@ def init_keyboard_listener():
                         events["policy_paused"] = True
                 elif hasattr(key, "char") and key.char == "c":
                     if events["policy_paused"] and not events["correction_active"]:
-                        logger.info("[HIL] Taking control...")
+                        err = events["position_error"]
+                        if err <= takeover_threshold:
+                            logger.info("[HIL] Taking control...")
+                            events["start_next_episode"] = True
+                        else:
+                            joint_errors = events["joint_position_errors"]
+                            teleop_pos = events["teleop_positions"]
+                            robot_pos = events["robot_positions"]
+                            lines = ["[HIL] Cannot take control yet (max error %.4f > threshold %.4f) - press 'o' to override" % (err, takeover_threshold)]
+                            lines.append(f"  {'joint':<30} {'teleop':>10} {'robot':>10} {'error':>10}")
+                            lines.append(f"  {'-'*62}")
+                            for k in sorted(joint_errors):
+                                flag = "  <-- !" if joint_errors[k] > takeover_threshold else ""
+                                lines.append(f"  {k:<30} {teleop_pos.get(k, float('nan')):>10.4f} {robot_pos.get(k, float('nan')):>10.4f} {joint_errors[k]:>10.4f}{flag}")
+                            logger.info("\n".join(lines))
+                elif hasattr(key, "char") and key.char == "o":
+                    if events["policy_paused"] and not events["correction_active"]:
+                        logger.warning("[HIL] Override - taking control despite position error %.4f", events["position_error"])
                         events["start_next_episode"] = True
                 elif hasattr(key, "char") and key.char == "p":
                     if events["policy_paused"] or events["correction_active"]:
@@ -219,9 +248,19 @@ def print_controls(rtc: bool = False):
     logger.info(
         "%s\n  Controls:\n"
         "    SPACE  - Pause policy\n"
-        "    c      - Take control\n"
+        "    c      - Take control (if position error is small enough)\n"
+        "    o      - Take control (override position error check)\n"
         "    p      - Resume policy after pause/correction\n"
         "    →      - End episode\n"
         "    ESC    - Stop and push to hub",
         mode,
     )
+
+
+def joint_position_error(a: dict, b: dict) -> tuple[float, dict[str, float]]:
+    """
+    Compute max absolute joint error between two joint position dicts.
+    Returns (max_error, per_joint_errors).
+    """
+    errors = {k: abs(a[k] - b[k]) for k in a.keys()}
+    return max(errors.values()), errors

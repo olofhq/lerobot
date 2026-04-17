@@ -105,6 +105,7 @@ import torch
 from hil_utils import (
     HILDatasetConfig,
     init_keyboard_listener,
+    joint_position_error,
     make_identity_processors,
     print_controls,
     reset_loop,
@@ -581,6 +582,9 @@ def _rollout_sync(
     waiting_for_takeover = False
     last_action: dict[str, Any] | None = None
     robot_action: dict[str, Any] = {}
+    teleop_hold_target: dict[str, Any] | None = None
+    handoff_frames_total = max(1, round(fps * 1))  # 0.3s blend window
+    handoff_frame = 0  # counts up from 0 to handoff_frames_total
     action_keys = list(dataset.features[ACTION]["names"])
     obs_state_names = list(dataset.features[f"{OBS_STR}.state"]["names"])
     obs_image_names = [
@@ -619,6 +623,7 @@ def _rollout_sync(
             waiting_for_takeover = False
             was_paused = False
             last_action = None
+            teleop_hold_target = None
             interpolator.reset()
             policy.reset()
             preprocessor.reset()
@@ -630,9 +635,11 @@ def _rollout_sync(
                 k: v for k, v in obs.items() if k.endswith(".pos") and k in robot.observation_features
             }
             teleop_smooth_move_to(teleop, robot_pos, duration_s=2.0, fps=50)
+            teleop_hold_target = robot_pos
             events["start_next_episode"] = False
             waiting_for_takeover = True
             was_paused = True
+            events["position_error"] = float("inf")
             interpolator.reset()
 
         if waiting_for_takeover and events["start_next_episode"]:
@@ -640,6 +647,7 @@ def _rollout_sync(
             events["start_next_episode"] = False
             events["correction_active"] = True
             waiting_for_takeover = False
+            handoff_frame = 0
 
         obs = robot.get_observation()
         obs_filtered = {k: obs[k] for k in obs_state_names if k in obs}
@@ -647,7 +655,19 @@ def _rollout_sync(
         obs_frame = build_dataset_frame(dataset.features, obs_filtered, prefix=OBS_STR)
 
         if events["correction_active"]:
-            robot_action = teleop.get_action()
+            teleop_action = teleop.get_action()
+            if handoff_frame < handoff_frames_total and last_action:
+                # Blend from last policy position to leader over the handoff window
+                t = handoff_frame / handoff_frames_total
+                robot_action = {
+                    k: last_action[k] * (1 - t) + teleop_action[k] * t
+                    for k in teleop_action
+                    if k in last_action
+                }
+                handoff_frame += 1
+            else:
+                robot_action = teleop_action
+                handoff_frame = handoff_frames_total  # clamp
             robot.send_action(robot_action)
             robot_command_count += 1
             action_frame = build_dataset_frame(dataset.features, robot_action, prefix=ACTION)
@@ -663,6 +683,20 @@ def _rollout_sync(
             if last_action:
                 robot.send_action(last_action)
                 robot_command_count += 1
+            # Keep position_error current so the keyboard handler can gate 'c'
+            if waiting_for_takeover:
+                # Continuously re-send the target so servos actively fight gravity/compliance
+                if teleop_hold_target and hasattr(teleop, "write_goal_positions"):
+                    teleop.write_goal_positions(teleop_hold_target)
+                teleop_pos = teleop.get_action()
+                robot_obs = robot.get_observation()
+                common_keys = {k: robot_obs[k] for k in teleop_pos if k in robot_obs}
+                if common_keys:
+                    events["teleop_positions"] = {k: teleop_pos[k] for k in common_keys}
+                    events["robot_positions"] = common_keys
+                    events["position_error"], events["joint_position_errors"] = joint_position_error(
+                        events["teleop_positions"], events["robot_positions"]
+                    )
 
         else:
             if interpolator.needs_new_action():
@@ -775,6 +809,9 @@ def _rollout_rtc(
     control_interval = interpolator.get_control_interval(fps)
 
     robot_action: dict[str, Any] = {}
+    teleop_hold_target: dict[str, Any] | None = None
+    handoff_frames_total = max(1, round(fps * 0.3))
+    handoff_frame = 0
     timestamp = 0.0
     start_t = time.perf_counter()
     stats_window_start = start_t
@@ -807,6 +844,8 @@ def _rollout_rtc(
             waiting_for_takeover = False
             was_paused = False
             last_action = None
+            teleop_hold_target = None
+            handoff_frame = 0
             interpolator.reset()
             queue_holder["queue"] = ActionQueue(cfg.rtc)
             policy_active.clear()
@@ -821,9 +860,11 @@ def _rollout_rtc(
                 k: v for k, v in obs.items() if k.endswith(".pos") and k in robot.observation_features
             }
             teleop_smooth_move_to(teleop, robot_pos, duration_s=2.0, fps=50)
+            teleop_hold_target = robot_pos
             events["start_next_episode"] = False
             waiting_for_takeover = True
             was_paused = True
+            events["position_error"] = float("inf")
             interpolator.reset()
 
         if waiting_for_takeover and events["start_next_episode"]:
@@ -831,6 +872,7 @@ def _rollout_rtc(
             events["start_next_episode"] = False
             events["correction_active"] = True
             waiting_for_takeover = False
+            handoff_frame = 0
             queue_holder["queue"] = ActionQueue(cfg.rtc)
 
         now_for_obs = time.perf_counter()
@@ -851,7 +893,19 @@ def _rollout_rtc(
             last_obs_poll_t = now_for_obs
 
         if events["correction_active"]:
-            robot_action = teleop.get_action()
+            teleop_action = teleop.get_action()
+            if handoff_frame < handoff_frames_total and last_action:
+                # Blend from last policy position to leader over the handoff window
+                t = handoff_frame / handoff_frames_total
+                robot_action = {
+                    k: last_action[k] * (1 - t) + teleop_action[k] * t
+                    for k in teleop_action
+                    if k in last_action
+                }
+                handoff_frame += 1
+            else:
+                robot_action = teleop_action
+                handoff_frame = handoff_frames_total  # clamp
             robot.send_action(robot_action)
             robot_command_count += 1
             action_frame = build_dataset_frame(dataset.features, robot_action, prefix=ACTION)
@@ -867,6 +921,19 @@ def _rollout_rtc(
             if last_action:
                 robot.send_action(last_action)
                 robot_command_count += 1
+            # Keep position_error current so the keyboard handler can gate 'c'
+            if waiting_for_takeover:
+                # Continuously re-send the target so servos actively fight gravity/compliance
+                if teleop_hold_target and hasattr(teleop, "write_goal_positions"):
+                    teleop.write_goal_positions(teleop_hold_target)
+                teleop_pos = teleop.get_action()
+                common_keys = {k: obs_filtered[k] for k in teleop_pos if k in obs_filtered}
+                if common_keys:
+                    events["teleop_positions"] = {k: teleop_pos[k] for k in common_keys}
+                    events["robot_positions"] = common_keys
+                    events["position_error"], events["joint_position_errors"] = joint_position_error(
+                        events["teleop_positions"], events["robot_positions"]
+                    )
 
         else:
             if not policy_active.is_set():

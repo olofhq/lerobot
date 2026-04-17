@@ -18,7 +18,9 @@ import logging
 import time
 from functools import cached_property
 
-from lerobot.cameras import make_cameras_from_configs
+import numpy as np
+
+from lerobot.cameras.utils import make_cameras_from_configs
 from lerobot.motors import Motor, MotorCalibration, MotorNormMode
 from lerobot.motors.feetech import (
     FeetechMotorsBus,
@@ -68,9 +70,13 @@ class SOFollower(Robot):
 
     @property
     def _cameras_ft(self) -> dict[str, tuple]:
-        return {
-            cam: (self.config.cameras[cam].height, self.config.cameras[cam].width, 3) for cam in self.cameras
-        }
+        ft: dict[str, tuple] = {}
+        for cam_key in self.cameras:
+            cfg = self.config.cameras[cam_key]
+            ft[cam_key] = (cfg.height, cfg.width, 3)
+            if getattr(cfg, "use_depth", False):
+                ft[f"{cam_key}_depth"] = (cfg.height, cfg.width, 3)
+        return ft
 
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
@@ -187,6 +193,12 @@ class SOFollower(Robot):
         for cam_key, cam in self.cameras.items():
             start = time.perf_counter()
             obs_dict[cam_key] = cam.read_latest()
+            if getattr(cam, "use_depth", False):
+                depth_uint16 = cam.read_latest_depth()
+                # Normalize uint16 depth (mm) to float32 [0, 1] and broadcast to 3 channels
+                # so it is compatible with the existing image/video storage pipeline.
+                depth_norm = depth_uint16.astype(np.float32) / 65535.0
+                obs_dict[f"{cam_key}_depth"] = np.stack([depth_norm, depth_norm, depth_norm], axis=-1)
             dt_ms = (time.perf_counter() - start) * 1e3
             logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
 
