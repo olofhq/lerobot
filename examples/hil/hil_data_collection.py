@@ -113,20 +113,9 @@ from hil_utils import (
     teleop_smooth_move_to,
 )
 
-from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig  # noqa: F401
-from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig  # noqa: F401
-from lerobot.cameras.zmq.configuration_zmq import ZMQCameraConfig  # noqa: F401
-from lerobot.configs import parser
-from lerobot.configs.policies import PreTrainedConfig
-from lerobot.datasets.feature_utils import build_dataset_frame, combine_feature_dicts, hw_to_dataset_features
-from lerobot.datasets.image_writer import safe_stop_image_writer
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.pipeline_features import aggregate_pipeline_dataset_features, create_initial_features
-from lerobot.datasets.video_utils import VideoEncodingManager
-from lerobot.policies.factory import get_policy_class, make_policy, make_pre_post_processors
-from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.cameras.opencv import OpenCVCameraConfig  # noqa: F401
 from lerobot.cameras.realsense import RealSenseCameraConfig  # noqa: F401
+from lerobot.cameras.zmq import ZMQCameraConfig  # noqa: F401
 from lerobot.common.control_utils import is_headless, predict_action
 from lerobot.configs import PreTrainedConfig, parser
 from lerobot.datasets import (
@@ -321,13 +310,19 @@ def _start_pedal_listener(events: dict):
         return
 
     pedal_device = "/dev/input/by-id/usb-PCsensor_FootSwitch-event-kbd"
+    # Left pedal (A): Pause / Resume toggle
+    # Middle pedal (B): Take over control (start correction)
+    # Right pedal (C): End episode (save and move to next)
     key_left = "KEY_A"
+    key_middle = "KEY_B"
     key_right = "KEY_C"
 
     def pedal_reader():
         try:
             dev = InputDevice(pedal_device)
-            logger.info(f"[Pedal] Connected: {dev.name}")
+            dev.grab()  # Grab device so key presses don't leak to terminal
+            logger.info(f"[Pedal] Connected and grabbed: {dev.name}")
+            logger.info("[Pedal] Left(A)=Pause/Resume  Middle(B)=Take over  Right(C)=End episode")
 
             for ev in dev.read_loop():
                 if ev.type != ecodes.EV_KEY:
@@ -342,18 +337,37 @@ def _start_pedal_listener(events: dict):
                     continue
 
                 if events["in_reset"]:
-                    if code in [key_left, key_right]:
+                    # Any pedal press advances past the reset screen
+                    if code in [key_left, key_middle, key_right]:
                         events["start_next_episode"] = True
-                else:
-                    if code not in [key_left, key_right]:
-                        continue
+                    continue
 
+                if code == key_left:
+                    # Left pedal: Pause / Resume toggle
                     if events["correction_active"]:
+                        logger.info("[Pedal] Left: resuming policy (from correction)")
                         events["resume_policy"] = True
                     elif events["policy_paused"]:
-                        events["start_next_episode"] = True
+                        logger.info("[Pedal] Left: resuming policy (from pause)")
+                        events["resume_policy"] = True
                     else:
+                        logger.info("[Pedal] Left: pausing policy")
                         events["policy_paused"] = True
+
+                elif code == key_middle:
+                    # Middle pedal: Take over control
+                    if events["policy_paused"]:
+                        logger.info("[Pedal] Middle: taking over control")
+                        events["start_next_episode"] = True
+                    elif not events["correction_active"]:
+                        # Pause first, then immediately take over
+                        logger.info("[Pedal] Middle: pausing + taking over control")
+                        events["policy_paused"] = True
+
+                elif code == key_right:
+                    # Right pedal: End episode
+                    logger.info("[Pedal] Right: ending episode")
+                    events["exit_early"] = True
 
         except FileNotFoundError:
             logging.info(f"[Pedal] Device not found: {pedal_device}")
@@ -1142,8 +1156,8 @@ def hil_collect(cfg: HILConfig) -> LeRobotDataset:
         obs_holder = None
         obs_lock = Lock()
         hw_features = None
+        _start_pedal_listener(events)
         if use_rtc:
-            _start_pedal_listener(events)
             queue_holder = {"queue": ActionQueue(cfg.rtc)}
             obs_holder = {
                 "obs": None,
