@@ -35,6 +35,7 @@ DISPLAY_DATA="true"
 PUSH_TO_HUB="False"
 PLAY_SOUNDS="False"
 POLICY_PATH=""
+EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -51,7 +52,7 @@ while [[ $# -gt 0 ]]; do
         --push-to-hub)       PUSH_TO_HUB="$2"; shift 2 ;;
         --play-sounds)       PLAY_SOUNDS="$2"; shift 2 ;;
         -h|--help)           usage ;;
-        *)                   echo "Unknown option: $1"; usage ;;
+        *)                   EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
 
@@ -75,4 +76,5 @@ exec lerobot-record \
     --play_sounds="$PLAY_SOUNDS" \
     --policy.path="$POLICY_PATH" \
     --dataset.repo_id="$REPO_ID" \
-    --policy.n_action_steps="$N_ACTION_STEPS"
+    --policy.n_action_steps="$N_ACTION_STEPS" \
+    "${EXTRA_ARGS[@]}"

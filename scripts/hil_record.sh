@@ -35,6 +35,7 @@ ZMQ_PORT=5555
 REALSENSE_SERIAL="353322270661"
 PUSH_TO_HUB="False"
 POLICY_PATH=""
+EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -51,7 +52,7 @@ while [[ $# -gt 0 ]]; do
         --realsense-serial)  REALSENSE_SERIAL="$2"; shift 2 ;;
         --push-to-hub)       PUSH_TO_HUB="$2"; shift 2 ;;
         -h|--help)           usage ;;
-        *)                   echo "Unknown option: $1"; usage ;;
+        *)                   EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
 
@@ -76,4 +77,5 @@ exec python examples/hil/hil_data_collection.py \
     --dataset.repo_id="$REPO_ID" \
     --dataset.single_task="$TASK" \
     --dataset.push_to_hub="$PUSH_TO_HUB" \
-    --dataset.episode_time_s "$EPISODE_TIME"
+    --dataset.episode_time_s "$EPISODE_TIME" \
+    "${EXTRA_ARGS[@]}"

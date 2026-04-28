@@ -41,6 +41,7 @@ PUSH_TO_HUB="False"
 PLAY_SOUNDS="False"
 RESUME="True"
 DATASET_NAME=""
+EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -60,7 +61,7 @@ while [[ $# -gt 0 ]]; do
         --play-sounds)       PLAY_SOUNDS="$2"; shift 2 ;;
         --resume)            RESUME="$2"; shift 2 ;;
         -h|--help)           usage ;;
-        *)                   echo "Unknown option: $1"; usage ;;
+        *)                   EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
 
@@ -88,4 +89,5 @@ exec lerobot-record \
     --dataset.num_episodes="$NUM_EPISODES" \
     --dataset.episode_time_s "$EPISODE_TIME" \
     --resume "$RESUME" \
-    --dataset.root "$DATASET_ROOT"
+    --dataset.root "$DATASET_ROOT" \
+    "${EXTRA_ARGS[@]}"
