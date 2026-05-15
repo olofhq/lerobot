@@ -22,6 +22,7 @@ usage() {
     echo "  --push-to-hub        Push to hub (default: False)"
     echo "  --play-sounds        Play sounds (default: False)"
     echo "  --resume             Resume recording (default: True)"
+    echo "  --clean              Remove existing dataset before starting"
     exit 1
 }
 
@@ -40,6 +41,7 @@ DISPLAY_DATA="true"
 PUSH_TO_HUB="False"
 PLAY_SOUNDS="False"
 RESUME="True"
+CLEAN=false
 DATASET_NAME=""
 EXTRA_ARGS=()
 
@@ -60,6 +62,7 @@ while [[ $# -gt 0 ]]; do
         --push-to-hub)       PUSH_TO_HUB="$2"; shift 2 ;;
         --play-sounds)       PLAY_SOUNDS="$2"; shift 2 ;;
         --resume)            RESUME="$2"; shift 2 ;;
+        --clean)             CLEAN=true; shift ;;
         -h|--help)           usage ;;
         *)                   EXTRA_ARGS+=("$1"); shift ;;
     esac
@@ -72,6 +75,11 @@ fi
 
 REPO_ID="tee/${DATASET_NAME}"
 DATASET_ROOT="$HOME/.cache/huggingface/lerobot/${REPO_ID}"
+
+if [[ "$CLEAN" == true ]]; then
+    echo "Removing existing dataset: $DATASET_ROOT"
+    rm -rf "$DATASET_ROOT"
+fi
 
 exec lerobot-record \
     --robot.type=so101_follower \

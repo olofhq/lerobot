@@ -211,6 +211,10 @@ class ZMQCamera(Camera):
         if frame is None:
             raise RuntimeError(f"{self} failed to decode image")
 
+        # cv2.imdecode returns BGR; convert to RGB to match color_mode default
+        if self.color_mode == ColorMode.RGB:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
         return frame
 
     @check_if_not_connected

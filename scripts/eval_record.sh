@@ -4,15 +4,16 @@ set -euo pipefail
 usage() {
     echo "Usage: $0 --policy-path <path> [options]"
     echo ""
+    echo "Deploy a trained policy on a real robot and record episodes (lerobot-rollout sentry)."
+    echo ""
     echo "Required:"
     echo "  --policy-path        Path to pretrained model checkpoint"
     echo ""
     echo "Optional:"
     echo "  --robot-port         Robot serial port (default: /dev/ttyACM0)"
     echo "  --robot-id           Robot ID (default: thing)"
-    echo "  --repo-id            Dataset repo ID (default: tee/eval_temp)"
+    echo "  --repo-id            Dataset repo ID (default: tee/rollout_temp)"
     echo "  --task               Single task description (default: Pick tee)"
-    echo "  --n-action-steps     Number of action steps (default: 50)"
     echo "  --zmq-address        ZMQ camera server address (default: 192.168.128.10)"
     echo "  --zmq-port           ZMQ camera port (default: 5555)"
     echo "  --realsense-serial   RealSense serial number (default: 353322270661)"
@@ -25,9 +26,8 @@ usage() {
 # Defaults
 ROBOT_PORT="/dev/ttyACM0"
 ROBOT_ID="thing"
-REPO_ID="tee/eval_temp"
+REPO_ID="tee/rollout_temp"
 TASK="Pick tee"
-N_ACTION_STEPS=50
 ZMQ_ADDRESS="192.168.128.10"
 ZMQ_PORT=5555
 REALSENSE_SERIAL="353322270661"
@@ -44,7 +44,6 @@ while [[ $# -gt 0 ]]; do
         --robot-id)          ROBOT_ID="$2"; shift 2 ;;
         --repo-id)           REPO_ID="$2"; shift 2 ;;
         --task)              TASK="$2"; shift 2 ;;
-        --n-action-steps)    N_ACTION_STEPS="$2"; shift 2 ;;
         --zmq-address)       ZMQ_ADDRESS="$2"; shift 2 ;;
         --zmq-port)          ZMQ_PORT="$2"; shift 2 ;;
         --realsense-serial)  REALSENSE_SERIAL="$2"; shift 2 ;;
@@ -65,7 +64,8 @@ CACHE_DIR="$HOME/.cache/huggingface/lerobot/${REPO_ID}"
 echo "Clearing cache: $CACHE_DIR"
 rm -rf "$CACHE_DIR"
 
-exec lerobot-record \
+exec lerobot-rollout \
+    --strategy.type=sentry \
     --robot.type=so101_follower \
     --robot.port="$ROBOT_PORT" \
     --robot.id="$ROBOT_ID" \
@@ -76,5 +76,4 @@ exec lerobot-record \
     --play_sounds="$PLAY_SOUNDS" \
     --policy.path="$POLICY_PATH" \
     --dataset.repo_id="$REPO_ID" \
-    --policy.n_action_steps="$N_ACTION_STEPS" \
     "${EXTRA_ARGS[@]}"

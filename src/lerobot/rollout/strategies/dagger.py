@@ -283,7 +283,7 @@ def _init_dagger_pedal(events: DAggerEvents, cfg: DAggerPedalConfig):
         if code in code_to_event:
             events.request_transition(code_to_event[code])
         if code == cfg.upload:
-            events.upload_requested.set()
+            events.stop_recording.set()
 
     logger.info("Initializing DAgger foot pedal listener (device=%s)", cfg.device_path)
     return start_pedal_listener(on_press, device_path=cfg.device_path)
@@ -579,6 +579,9 @@ class DAggerStrategy(RolloutStrategy):
         start_time = time.perf_counter()
         record_tick = 0
         recorded = 0
+        pending_save = False
+        correction_start = None
+        correction_settle_s = 0.3
         logger.info(
             "DAgger corrections-only recording started (target: %d episodes)", self.config.num_episodes
         )
@@ -603,18 +606,44 @@ class DAggerStrategy(RolloutStrategy):
                         self._apply_transition(old_phase, new_phase, engine, interpolator, robot, teleop)
                         last_action = None
 
-                        # Correction ended -> save episode (blocking if not streaming)
+                        # Correction ended -> defer save (wait for user to confirm or discard)
                         if old_phase == DAggerPhase.CORRECTING and new_phase == DAggerPhase.PAUSED:
+                            pending_save = True
+                            correction_start = None
+                            log_say("Press B to save, A to discard", play_sounds)
+                            logger.info("Correction pending — press correction to save, pause_resume to discard")
+
+                        # User pressed B while paused with pending save -> save episode, resume autonomous
+                        elif old_phase == DAggerPhase.PAUSED and new_phase == DAggerPhase.CORRECTING and pending_save:
                             with self._episode_lock:
                                 dataset.save_episode()
                             recorded += 1
+                            pending_save = False
                             self._needs_push.set()
                             logger.info(
-                                "Correction %d/%d saved",
+                                "Correction %d/%d saved — resuming autonomous mode",
                                 recorded,
                                 self.config.num_episodes,
                             )
                             log_say(f"Correction {recorded} saved", play_sounds)
+                            # Force back to autonomous (reset engine + interpolator)
+                            interpolator.reset()
+                            engine.reset()
+                            engine.resume()
+                            events.phase = DAggerPhase.AUTONOMOUS
+
+                        # Normal entry into correction mode (no pending save)
+                        elif old_phase == DAggerPhase.PAUSED and new_phase == DAggerPhase.CORRECTING and not pending_save:
+                            correction_start = time.perf_counter()
+                            record_tick = 0
+
+                        # User pressed A while paused with pending save -> discard episode, resume autonomous
+                        elif old_phase == DAggerPhase.PAUSED and new_phase == DAggerPhase.AUTONOMOUS and pending_save:
+                            with self._episode_lock:
+                                dataset.clear_episode_buffer()
+                            pending_save = False
+                            logger.info("Correction discarded — resuming autonomous mode")
+                            log_say("Correction discarded", play_sounds)
 
                     # On-demand upload
                     if events.upload_requested.is_set():
@@ -638,7 +667,9 @@ class DAggerStrategy(RolloutStrategy):
                         last_action = robot_action_to_send
                         self._log_telemetry(obs_processed, processed_teleop, ctx.runtime)
 
-                        if record_tick % record_stride == 0:
+                        # Skip recording during settle period to avoid capturing the initial jump
+                        settling = correction_start is not None and (time.perf_counter() - correction_start) < correction_settle_s
+                        if not settling and record_tick % record_stride == 0:
                             obs_frame = build_dataset_frame(features, obs_processed, prefix=OBS_STR)
                             action_frame = build_dataset_frame(features, processed_teleop, prefix=ACTION)
                             dataset.add_frame(
@@ -714,13 +745,13 @@ class DAggerStrategy(RolloutStrategy):
             # standardised, drive the leader to the follower's pose here so the
             # operator does not need to pre-align the arm by hand.  Until then
             # the user is responsible for the alignment.
-            # _teleop_smooth_move_to(teleop, _robot_pos, duration_s=2.0, fps=50)
+            _teleop_smooth_move_to(teleop, _robot_pos, duration_s=2.0, fps=50)
 
         elif new_phase == DAggerPhase.CORRECTING:
             logger.info("Entering correction mode — human teleop control")
             # TODO(Steven): re-enable once Teleoperator motor-control methods
             # are standardised across all teleop implementations.
-            # teleop.disable_torque()
+            teleop.disable_torque()
 
         elif new_phase == DAggerPhase.AUTONOMOUS:
             logger.info("Resuming autonomous mode — resetting engine and interpolator")
@@ -741,6 +772,9 @@ class DAggerStrategy(RolloutStrategy):
         uploading a partially-recorded episode.
         """
         if self._push_executor is None:
+            return
+
+        if cfg.dataset and not cfg.dataset.push_to_hub:
             return
 
         if self._events.phase == DAggerPhase.CORRECTING:

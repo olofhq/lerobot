@@ -178,12 +178,9 @@ def build_rollout_context(
     policy_config = cfg.policy
     policy_class = get_policy_class(policy_config.type)
 
-    full_config = PreTrainedConfig.from_pretrained(cfg.policy.pretrained_path)
-    for attr in ("device", "use_amp"):
-        if hasattr(cfg.policy, attr) and hasattr(full_config, attr):
-            cli_val = getattr(cfg.policy, attr)
-            if cli_val is not None:
-                setattr(full_config, attr, cli_val)
+    # Use cfg.policy directly — it was already loaded from the checkpoint
+    # with CLI overrides applied (e.g. --policy.n_action_steps=10).
+    full_config = cfg.policy
 
     if hasattr(full_config, "compile_model"):
         full_config.compile_model = cfg.use_torch_compile
@@ -332,6 +329,12 @@ def build_rollout_context(
     dataset = None
     if cfg.dataset is not None and not isinstance(cfg.strategy, BaseStrategyConfig):
         logger.info("Setting up dataset (repo_id=%s)...", cfg.dataset.repo_id)
+        if isinstance(cfg.strategy, DAggerStrategyConfig):
+            dataset_features["intervention"] = {
+                "dtype": "bool",
+                "shape": (1,),
+                "names": None,
+            }
         if cfg.resume:
             dataset = LeRobotDataset.resume(
                 cfg.dataset.repo_id,
@@ -345,13 +348,12 @@ def build_rollout_context(
                 image_writer_threads=cfg.dataset.num_image_writer_threads_per_camera
                 * len(robot.cameras if hasattr(robot, "cameras") else []),
             )
+            # Patch metadata and writer if intervention feature is missing from resumed dataset
+            if isinstance(cfg.strategy, DAggerStrategyConfig) and "intervention" not in dataset.meta.features:
+                dataset.meta.features["intervention"] = dataset_features["intervention"]
+                # Re-create the writer's episode buffer so it includes the new feature
+                dataset.writer.episode_buffer = dataset.writer._create_episode_buffer()
         else:
-            if isinstance(cfg.strategy, DAggerStrategyConfig):
-                dataset_features["intervention"] = {
-                    "dtype": "bool",
-                    "shape": (1,),
-                    "names": None,
-                }
 
             repo_name = cfg.dataset.repo_id.split("/", 1)[-1]
             if not repo_name.startswith("rollout_"):

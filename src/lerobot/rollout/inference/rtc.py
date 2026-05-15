@@ -224,6 +224,8 @@ class RTCInferenceEngine(InferenceEngine):
         self._postprocessor.reset()
         if self._action_queue is not None:
             self._action_queue.clear()
+        with self._obs_lock:
+            self._obs_holder["obs"] = None
 
     # ------------------------------------------------------------------
     # Action production (called from main thread)
