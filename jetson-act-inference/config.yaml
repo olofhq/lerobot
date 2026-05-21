@@ -1,0 +1,62 @@
+# Jetson ACT Inference Configuration
+
+model:
+  engine_path: "model/act_policy.engine"  # TensorRT engine (GPU, preferred)
+  onnx_path: "model/model.onnx"            # ONNX fallback
+  preprocessor_path: "model/policy_preprocessor_step_3_normalizer_processor.safetensors"
+  postprocessor_path: "model/policy_postprocessor_step_0_unnormalizer_processor.safetensors"
+  chunk_size: 100
+  action_dim: 6
+
+camera:
+  front:
+    type: "csi"             # USB camera via V4L2 fallback
+    device: 6               # /dev/video6 (See3CAM_24CUG) - device index may differ on Jetson
+    width: 1280
+    height: 720
+    fps: 60
+    flip: true              # Camera is mounted upside down
+    input_name: "observation.images.front"
+  wrist:
+    type: "realsense"       # Intel RealSense
+    width: 640
+    height: 480
+    fps: 30
+    input_name: "observation.images.wrist"
+
+motors:
+  port: "/dev/ttyACM0"
+  baudrate: 1000000
+  calibration_path: "~/.cache/huggingface/lerobot/calibration/robots/so_follower/thing.json"
+  # Motor definitions: name -> (id, norm_mode)
+  # norm_mode: "degrees" or "range_0_100"
+  joints:
+    shoulder_pan:  { id: 1, norm_mode: "degrees" }
+    shoulder_lift: { id: 2, norm_mode: "degrees" }
+    elbow_flex:    { id: 3, norm_mode: "degrees" }
+    wrist_flex:    { id: 4, norm_mode: "degrees" }
+    wrist_roll:    { id: 5, norm_mode: "degrees" }
+    gripper:       { id: 6, norm_mode: "range_0_100" }
+  # Joint order must match the state/action vector order used during training
+  joint_order:
+    - shoulder_pan
+    - shoulder_lift
+    - elbow_flex
+    - wrist_flex
+    - wrist_roll
+    - gripper
+
+normalization:
+  # Normalization mode for state and actions: "mean_std" or "min_max"
+  state_mode: "mean_std"
+  action_mode: "mean_std"
+  # Keys in safetensors files
+  state_key: "observation.state"
+  action_key: "action"
+
+inference:
+  fps: 30
+  temporal_ensemble: true
+  temporal_ensemble_coeff: 0.01
+  # ONNX input name for state
+  state_input_name: "observation.state"

@@ -129,6 +129,7 @@ from lerobot.teleoperators.keyboard import KeyboardTeleop
 from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.utils.feature_utils import build_dataset_frame, combine_feature_dicts
 from lerobot.utils.import_utils import register_third_party_plugins
+from lerobot.utils.pedal import start_pedal_listener
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import (
     init_logging,
@@ -417,6 +418,28 @@ def record(
             teleop.connect()
 
         listener, events = init_keyboard_listener()
+
+        # Foot pedal support: maps PCsensor FootSwitch keys to the same
+        # recording events so episodes can be controlled hands-free.
+        #   KEY_A (left)   → save episode / next
+        #   KEY_B (middle) → re-record episode
+        #   KEY_C (right)  → stop recording session
+        def _pedal_on_press(code: str) -> None:
+            if code == "KEY_A":
+                print("Pedal: save episode and continue...")
+                events["exit_early"] = True
+            elif code == "KEY_B":
+                print("Pedal: re-record episode...")
+                events["rerecord_episode"] = True
+                events["exit_early"] = True
+            elif code == "KEY_C":
+                print("Pedal: stop recording...")
+                events["stop_recording"] = True
+                events["exit_early"] = True
+
+        pedal_thread = start_pedal_listener(_pedal_on_press)
+        if pedal_thread is not None:
+            logging.info("Foot pedal connected for recording control")
 
         if not cfg.dataset.streaming_encoding:
             logging.info(

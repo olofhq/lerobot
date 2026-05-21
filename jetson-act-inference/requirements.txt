@@ -1,0 +1,13 @@
+# Jetson Orin Nano - ACT Policy Inference
+#
+# GPU backend: TensorRT + CUDA are preinstalled with JetPack — no pip needed.
+# Convert your ONNX model to a TensorRT engine:
+#   trtexec --onnx=model/act_policy.onnx --saveEngine=model/act_policy.engine --fp16
+#
+# CPU fallback (optional): pip install onnxruntime
+opencv-python
+pyrealsense2
+feetech-servo-sdk
+numpy
+safetensors
+pyyaml

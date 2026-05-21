@@ -1,0 +1,18 @@
+# Stable device symlinks for LeRobot setup
+# Install: sudo cp scripts/99-lerobot-devices.rules /etc/udev/rules.d/
+# Reload:  sudo udevadm control --reload-rules && sudo udevadm trigger
+
+# See3CAM_24CUG front camera → /dev/see3cam
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="2560", ATTRS{idProduct}=="c128", ATTRS{serial}=="36104706", ATTR{index}=="0", SYMLINK+="see3cam"
+
+# SO-101 follower arm (robot) → /dev/follower_arm
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5AAF263137", SYMLINK+="follower_arm"
+
+# SO-101 leader arm (teleop) → /dev/leader_arm
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5AAF263962", SYMLINK+="leader_arm"
+
+# Intel RealSense D405 wrist camera → /dev/realsense
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b5b", ATTRS{serial}=="351623070667", ATTR{index}=="0", SYMLINK+="realsense"
+
+# NVIDIA Jetson Orin Nano → /dev/jetson
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0955", ATTRS{idProduct}=="7020", ATTRS{serial}=="1421223019146", SYMLINK+="jetson"

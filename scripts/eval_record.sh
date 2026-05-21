@@ -10,12 +10,14 @@ usage() {
     echo "  --policy-path        Path to pretrained model checkpoint"
     echo ""
     echo "Optional:"
-    echo "  --robot-port         Robot serial port (default: /dev/ttyACM0)"
+    echo "  --robot-port         Robot serial port (default: /dev/follower_arm)"
     echo "  --robot-id           Robot ID (default: thing)"
-    echo "  --repo-id            Dataset repo ID (default: tee/rollout_temp)"
+    echo "  --repo-id            Dataset repo ID (default: tee_usbc/rollout_temp)"
     echo "  --task               Single task description (default: Pick tee)"
-    echo "  --zmq-address        ZMQ camera server address (default: 192.168.128.10)"
-    echo "  --zmq-port           ZMQ camera port (default: 5555)"
+    echo "  --camera-index       Front camera device index or path (default: /dev/see3cam)"
+    echo "  --camera-fps         Front camera FPS (default: 60)"
+    echo "  --camera-width       Front camera width (default: 1280)"
+    echo "  --camera-height      Front camera height (default: 720)"
     echo "  --realsense-serial   RealSense serial number (default: 353322270661)"
     echo "  --display-data       Display data (default: true)"
     echo "  --push-to-hub        Push to hub (default: False)"
@@ -24,12 +26,14 @@ usage() {
 }
 
 # Defaults
-ROBOT_PORT="/dev/ttyACM0"
+ROBOT_PORT="/dev/follower_arm"
 ROBOT_ID="thing"
-REPO_ID="tee/rollout_temp"
+REPO_ID="tee_usbc/rollout_temp"
 TASK="Pick tee"
-ZMQ_ADDRESS="192.168.128.10"
-ZMQ_PORT=5555
+CAMERA_INDEX="/dev/see3cam"
+CAMERA_FPS=60
+CAMERA_WIDTH=1280
+CAMERA_HEIGHT=720
 REALSENSE_SERIAL="353322270661"
 DISPLAY_DATA="true"
 PUSH_TO_HUB="False"
@@ -44,8 +48,10 @@ while [[ $# -gt 0 ]]; do
         --robot-id)          ROBOT_ID="$2"; shift 2 ;;
         --repo-id)           REPO_ID="$2"; shift 2 ;;
         --task)              TASK="$2"; shift 2 ;;
-        --zmq-address)       ZMQ_ADDRESS="$2"; shift 2 ;;
-        --zmq-port)          ZMQ_PORT="$2"; shift 2 ;;
+        --camera-index)      CAMERA_INDEX="$2"; shift 2 ;;
+        --camera-fps)        CAMERA_FPS="$2"; shift 2 ;;
+        --camera-width)      CAMERA_WIDTH="$2"; shift 2 ;;
+        --camera-height)     CAMERA_HEIGHT="$2"; shift 2 ;;
         --realsense-serial)  REALSENSE_SERIAL="$2"; shift 2 ;;
         --display-data)      DISPLAY_DATA="$2"; shift 2 ;;
         --push-to-hub)       PUSH_TO_HUB="$2"; shift 2 ;;
@@ -69,7 +75,7 @@ exec lerobot-rollout \
     --robot.type=so101_follower \
     --robot.port="$ROBOT_PORT" \
     --robot.id="$ROBOT_ID" \
-    --robot.cameras="{front: {type: zmq, server_address: '$ZMQ_ADDRESS', port: $ZMQ_PORT, camera_name: 'front', width: 640, height: 352, fps: 10}, wrist: {type: intelrealsense, use_depth: true, width: 640, height: 480, fps: 30, serial_number_or_name: $REALSENSE_SERIAL}}" \
+    --robot.cameras="{front: {type: opencv, index_or_path: '$CAMERA_INDEX', width: $CAMERA_WIDTH, height: $CAMERA_HEIGHT, fps: $CAMERA_FPS, fourcc: MJPG, rotation: 180}, wrist: {type: intelrealsense, use_depth: true, width: 640, height: 480, fps: 30, serial_number_or_name: $REALSENSE_SERIAL}}" \
     --display_data="$DISPLAY_DATA" \
     --dataset.single_task="$TASK" \
     --dataset.push_to_hub="$PUSH_TO_HUB" \

@@ -7,7 +7,7 @@ if [[ $# -ne 1 ]]; then
     exit 1
 fi
 
-DATASET_ROOT="$HOME/.cache/huggingface/lerobot/tee/$1"
+DATASET_ROOT="$HOME/.cache/huggingface/lerobot/tee_usbc/$1"
 
 if [[ ! -d "$DATASET_ROOT" ]]; then
     echo "Error: dataset not found at $DATASET_ROOT"
