@@ -18,8 +18,8 @@ from pathlib import Path
 
 import numpy as np
 
-from camera import CSICamera, RealSenseCamera
-from motors import FeetechMotorBus, MotorDef
+from camera import CSICamera, RealSenseCamera, USBCamera
+from motors import FeetechMotorBus, MotorDef, MOTOR_RESOLUTION
 from postprocessing import Postprocessor, TemporalEnsembler
 from preprocessing import Preprocessor
 from utils import get_calibration_path, load_config, load_stats
@@ -38,6 +38,42 @@ def build_motors(cfg: dict) -> tuple[FeetechMotorBus, list[str]]:
     )
     joint_order = cfg["motors"]["joint_order"]
     return bus, joint_order
+
+
+def get_home_position(motor_bus: FeetechMotorBus, joint_order: list[str]) -> np.ndarray:
+    """Compute home position from calibration data.
+
+    During calibration, homing_offset is set so that the physical home pose
+    reads as raw value 2047 (half of 4096 resolution). We normalize that
+    value through the same calibration logic to get the home in output units.
+    """
+    home_raw = (MOTOR_RESOLUTION - 1) // 2  # 2047: the half-turn point
+
+    home = np.zeros(len(joint_order), dtype=np.float32)
+    for i, name in enumerate(joint_order):
+        motor = next(m for m in motor_bus.motors if m.name == name)
+        cal = motor_bus.calibration[name]
+        home[i] = motor_bus._normalize_value(home_raw, motor.norm_mode, cal)
+    return home
+
+
+def return_to_home(motor_bus: FeetechMotorBus, joint_order: list[str],
+                   initial_pos: np.ndarray, cfg: dict) -> None:
+    """Gradually move the arm back to its initial position (captured at startup)."""
+    home_steps = cfg["inference"].get("home_steps", 60)
+    target_dt = 1.0 / cfg["inference"]["fps"]
+
+    current = motor_bus.read_normalized(joint_order)
+
+    print(f"Current position: {current}")
+    print(f"Target position:  {initial_pos}")
+    print(f"Returning to initial position over {home_steps} steps at {cfg['inference']['fps']} Hz...")
+    for i in range(1, home_steps + 1):
+        alpha = i / home_steps
+        interpolated = current + alpha * (initial_pos - current)
+        motor_bus.write_normalized(interpolated, joint_order)
+        time.sleep(target_dt)
+    print("Position reached.")
 
 
 def build_session(cfg: dict):
@@ -116,7 +152,7 @@ def main():
     print(f"Model outputs: {output_names}")
 
     # ── Cameras ────────────────────────────────────────────────────────
-    cameras: dict[str, RealSenseCamera | CSICamera] = {}
+    cameras: dict[str, RealSenseCamera | CSICamera | USBCamera] = {}
     cam_configs: dict[str, dict] = {}
     for cam_name, cam_cfg in cfg["camera"].items():
         cam_configs[cam_cfg["input_name"]] = cam_cfg
@@ -126,6 +162,12 @@ def main():
             )
         elif cam_cfg["type"] == "csi":
             cameras[cam_cfg["input_name"]] = CSICamera(
+                device=cam_cfg.get("device", 0),
+                width=cam_cfg["width"], height=cam_cfg["height"], fps=cam_cfg["fps"],
+                flip=cam_cfg.get("flip", False),
+            )
+        elif cam_cfg["type"] == "usb":
+            cameras[cam_cfg["input_name"]] = USBCamera(
                 device=cam_cfg.get("device", 0),
                 width=cam_cfg["width"], height=cam_cfg["height"], fps=cam_cfg["fps"],
                 flip=cam_cfg.get("flip", False),
@@ -154,12 +196,19 @@ def main():
 
     try:
         if not args.dry_run:
-            for cam in cameras.values():
+            # Start RealSense cameras first, before USB cameras (whose _usb_reset
+            # can disrupt other devices on the same USB bus).
+            for name, cam in sorted(
+                cameras.items(),
+                key=lambda x: 0 if isinstance(x[1], RealSenseCamera) else 1,
+            ):
                 cam.start()
             print(f"Cameras started: {list(cameras.keys())}")
             motor_bus.connect()
             motor_bus.load_calibration(calibration_path)
             print(f"Motors connected, calibration loaded from {calibration_path}")
+            initial_position = motor_bus.read_normalized(joint_order)
+            print(f"Initial position captured: {initial_position}")
         else:
             print("Dry-run mode: skipping camera/motor initialization")
 
@@ -226,9 +275,17 @@ def main():
 
     finally:
         if not args.dry_run:
+            print("Stopping inference, returning arm to initial position...")
+            try:
+                return_to_home(motor_bus, joint_order, initial_position, cfg)
+            except Exception as e:
+                print(f"Warning: return to home failed: {e}")
             for cam in cameras.values():
                 cam.stop()
-            motor_bus.disconnect()
+            try:
+                motor_bus.disconnect()
+            except Exception as e:
+                print(f"Warning: motor disconnect failed: {e}")
         print("Shutdown complete.")
 
 

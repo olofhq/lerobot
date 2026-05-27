@@ -78,6 +78,7 @@ class FeetechMotorBus:
         self.motor_ids = [m.motor_id for m in motors]
         self.calibration: dict[str, MotorCalibration] = {}
         self.baudrate = baudrate
+        self._connected = False
 
     def connect(self) -> None:
         """Open serial port and enable torque on all motors."""
@@ -85,6 +86,7 @@ class FeetechMotorBus:
             raise ConnectionError(f"Failed to open port {self.port_handler.port_name}")
         if not self.port_handler.setBaudRate(self.baudrate):
             raise ConnectionError(f"Failed to set baudrate {self.baudrate}")
+        self._connected = True
 
         for motor in self.motors:
             self.packet_handler.write1ByteTxRx(
@@ -93,11 +95,14 @@ class FeetechMotorBus:
 
     def disconnect(self) -> None:
         """Disable torque and close port."""
+        if not self._connected:
+            return
         for motor in self.motors:
             self.packet_handler.write1ByteTxRx(
                 self.port_handler, motor.motor_id, ADDR_TORQUE_ENABLE, 0
             )
         self.port_handler.closePort()
+        self._connected = False
 
     def load_calibration(self, calibration_path: Path) -> None:
         """Load calibration from JSON file (LeRobot format).

@@ -1,124 +1,169 @@
 # Jetson ACT Inference
 
-Minimal standalone inference for a trained ACT policy (ONNX) on Jetson Orin Nano.
-No PyTorch or LeRobot dependency — only ONNX Runtime, OpenCV, and numpy.
+Minimal standalone inference for a trained ACT policy on Jetson Orin Nano.
+No PyTorch or LeRobot dependency — uses TensorRT (preinstalled via JetPack) for GPU inference.
 
 ## Hardware
 
-- **Board**: NVIDIA Jetson Orin Nano
-- **Robot**: SO-101 arm (6× Feetech STS3215 servos, USB serial @ 1 Mbaud)
-- **Camera**: Intel RealSense (wrist-mounted)
+- **Board**: NVIDIA Jetson Orin Nano (8GB, JetPack 6 / L4T R36.4, TensorRT 10.3)
+- **Robot**: SO-101 arm (6× Feetech STS3215 servos, `/dev/ttyACM0` @ 1 Mbaud)
+- **Wrist camera**: Intel RealSense D405 (640×480 @ 30fps, via pyrealsense2)
+- **Front camera**: e-con See3CAM_24CUG USB camera (1280×720 @ 60fps, `/dev/video6`, mounted upside down → flipped in software)
 
 ## Setup
 
-### 1. Install dependencies
+### 1. Create venv with system packages (required for TensorRT access)
 
 ```bash
+python3 -m venv --system-site-packages .edge_act_venv
+source .edge_act_venv/bin/activate
 pip install -r requirements.txt
 ```
 
-For Jetson, install `onnxruntime-gpu` from NVIDIA's wheels:
-```bash
-pip install onnxruntime-gpu --extra-index-url https://elinux.org/Jetson_Zoo
-```
+### 2. Model files
 
-### 2. Export your trained model
+Place these in the `model/` directory:
+- `model.onnx` — ONNX export of your trained ACT policy
+- `policy_preprocessor_step_3_normalizer_processor.safetensors` — normalization stats
+- `policy_postprocessor_step_0_unnormalizer_processor.safetensors` — denormalization stats
 
-On your training machine (with PyTorch + LeRobot installed):
+#### Exporting ONNX from a trained ACT policy
 
-```bash
-python scripts/export_onnx.py \
-    --input path/to/trained_model \
-    --output jetson-act-inference/model/act_policy.onnx
-```
-
-Copy the preprocessor/postprocessor safetensors from your trained model directory:
+On your training machine (where PyTorch and LeRobot are installed), use the provided export script:
 
 ```bash
-cp path/to/trained_model/policy_preprocessor_step_*_normalizer.safetensors \
-   jetson-act-inference/model/policy_preprocessor.safetensors
-
-cp path/to/trained_model/policy_postprocessor_step_*_normalizer.safetensors \
-   jetson-act-inference/model/policy_postprocessor.safetensors
+python scripts/export_onnx.py --input <path/to/pretrained_model> --output model/model.onnx
 ```
 
-### 3. Calibrate your robot
+| Argument    | Required | Description                                      |
+|-------------|----------|--------------------------------------------------|
+| `--input`   | Yes      | Path to the pretrained ACT model directory        |
+| `--output`  | Yes      | Path for the exported ONNX file                   |
+| `--opset`   | No       | ONNX opset version (default: 18)                  |
 
-Run LeRobot calibration on the Jetson (or copy the file from another machine):
+The script automatically discovers model inputs from the policy config and exports with dynamic batch axes. Copy the resulting `.onnx` file and the processor `.safetensors` files from the model directory to `model/` on the Jetson.
+
+### 3. Build TensorRT engine
+
+The Orin Nano only has 8GB shared RAM. You need swap enabled:
 
 ```bash
-# Calibration file location:
-~/.lerobot/calibration/so101.json
+sudo swapon /swapfile
 ```
 
-### 4. Verify config
+Optionally free RAM by stopping the desktop:
+```bash
+sudo systemctl stop gdm3
+```
 
-Edit `config.yaml` to match your setup:
-- `motors.port` — USB serial port (e.g., `/dev/ttyUSB0`)
-- `motors.robot_id` — matches calibration filename
-- `camera.input_name` — matches the ONNX model's image input name
-- `inference.state_input_name` — matches the ONNX model's state input name
-- `model.chunk_size` / `model.action_dim` — from your trained model config
+Then build the engine:
+```bash
+/usr/src/tensorrt/bin/trtexec \
+    --onnx=model/model.onnx \
+    --saveEngine=model/act_policy.engine \
+    --fp16 \
+    --memPoolSize=workspace:512 \
+    --builderOptimizationLevel=2 \
+    --skipInference
+```
 
-You can inspect input/output names with [Netron](https://netron.app) or:
-```python
-import onnxruntime as ort
-s = ort.InferenceSession("model/act_policy.onnx")
-print([i.name for i in s.get_inputs()])
-print([o.name for o in s.get_outputs()])
+This takes 30-60+ minutes due to swap pressure. Monitor with `top` — `trtexec` will use ~5GB RSS and thrash swap. As long as CPU TIME is incrementing, it's working.
+
+### 4. Calibrate your robot
+
+Run calibration via LeRobot on your training machine and copy to:
+```
+~/.cache/huggingface/lerobot/calibration/robots/so_follower/thing.json
+```
+
+### 5. Verify config
+
+Edit `config.yaml`:
+- `motors.port` — serial port (`/dev/ttyACM0`)
+- `camera.front.device` — V4L2 device index (check with `cat /sys/class/video4linux/video*/name`)
+- `camera.front.flip` — set `true` if camera is upside down
+
+### 6. Permissions
+
+```bash
+sudo chmod 666 /dev/ttyACM0
+# Or permanently: sudo usermod -aG dialout $USER (requires re-login)
 ```
 
 ## Run
 
 ```bash
-python inference.py                   # Normal operation
-python inference.py --dry-run         # Camera + model only, no motor writes
+python inference.py                   # Full live inference with motor control
+python inference.py --dry-run         # Model only, no cameras/motors (uses dummy data)
 python inference.py --config my.yaml  # Custom config file
 ```
+
+### Test scripts
+
+```bash
+python preview_cameras.py             # Live camera preview (both streams, raw + model crop)
+python test_motors_inference.py       # Read joints + 20 inference steps, no motor writes
+```
+
+## Performance
+
+- **Inference**: ~50-67ms per step (~15-20 Hz) on Orin Nano with FP16 TensorRT engine
+- **First step**: ~155ms (CUDA warmup)
+- Model inputs: `observation.state` (1×6), `observation.images.front` (1×3×352×640), `observation.images.wrist` (1×3×480×640)
+- Model output: `actions` (1×100×6) — 100-step action chunk
 
 ## File Structure
 
 ```
 jetson-act-inference/
-├── config.yaml          # All tunable parameters
-├── requirements.txt     # Python dependencies
-├── inference.py         # Main 30 Hz control loop
-├── camera.py            # RealSense RGB capture
-├── motors.py            # Feetech STS3215 read/write + calibration
-├── preprocessing.py     # Image resize/normalize, state normalize
-├── postprocessing.py    # Action denormalize + temporal ensemble
-├── utils.py             # Config & safetensors loading
-├── README.md
-└── model/               # (you provide these)
-    ├── act_policy.onnx
-    ├── policy_preprocessor.safetensors
-    └── policy_postprocessor.safetensors
+├── config.yaml              # All tunable parameters
+├── requirements.txt         # Python dependencies (no onnxruntime, no torch)
+├── inference.py             # Main control loop (~15 Hz)
+├── trt_runtime.py           # TensorRT GPU backend (ctypes + tensorrt)
+├── camera.py                # RealSenseCamera + CSICamera (V4L2 fallback)
+├── motors.py                # Feetech STS3215 sync read/write + calibration
+├── preprocessing.py         # Image resize/normalize, state normalize
+├── postprocessing.py        # Action denormalize + temporal ensemble
+├── utils.py                 # Config & safetensors loading
+├── convert_engine.sh        # trtexec wrapper script
+├── preview_cameras.py       # Camera preview utility
+├── test_motors_inference.py # Test: read joints + run inference (no writes)
+└── model/
+    ├── model.onnx
+    ├── act_policy.engine
+    ├── policy_preprocessor_step_3_normalizer_processor.safetensors
+    └── policy_postprocessor_step_0_unnormalizer_processor.safetensors
 ```
 
 ## Data Flow
 
 ```
-Camera frame (640×480 RGB uint8)
-  → resize to 224×224
-  → float32 / 255
-  → HWC → CHW
-  → normalize with preprocessor stats
-                                        ╲
-                                         → ONNX model → (1, chunk_size, 6)
-                                        ╱                      ↓
-Motor positions (6× raw servo values)                  denormalize actions
-  → decode sign-magnitude                                      ↓
-  → calibration normalize                           temporal ensemble (optional)
-    (degrees / 0-100)                                          ↓
-  → normalize with preprocessor stats               take action (action_dim,)
-                                                               ↓
-                                                    reverse calibration normalize
-                                                               ↓
-                                                    encode sign-magnitude
-                                                               ↓
-                                                    sync_write Goal_Position
-                                                               ↓
-                                                         loop @ 30 Hz
+Front camera (1280×720 RGB)           Wrist camera (640×480 RGB)
+  → flip 180° (upside down)
+  → resize to 640×352                   → (no resize needed)
+  → float32 / 255                       → float32 / 255
+  → HWC → CHW                           → HWC → CHW
+  → mean_std normalize                  → mean_std normalize
+          ╲                                    ╱
+           ╲                                  ╱
+            → TensorRT FP16 engine (GPU) ←──╱
+           ╱         ↑                    ╲
+          ╱          │                     ╲
+Motor positions      │                      → actions (1, 100, 6)
+  → sync_read        │                           ↓
+  → decode sign-mag  │                    denormalize (mean_std)
+  → calibration norm │                           ↓
+  → mean_std norm ───╯                 temporal ensemble (w_i = exp(-0.01*i))
+                                                 ↓
+                                          action (6,)
+                                                 ↓
+                                       reverse calibration norm
+                                                 ↓
+                                       encode sign-magnitude
+                                                 ↓
+                                       sync_write Goal_Position
+                                                 ↓
+                                           loop @ ~15 Hz
 ```
 
 ## Motor Joint Mapping
@@ -131,3 +176,36 @@ Motor positions (6× raw servo values)                  denormalize actions
 | wrist_flex     | 4  | degrees     |
 | wrist_roll     | 5  | degrees     |
 | gripper        | 6  | range_0_100 |
+
+## Troubleshooting
+
+### `No module named 'tensorrt'`
+Your venv wasn't created with `--system-site-packages`. Recreate it:
+```bash
+rm -rf .edge_act_venv
+python3 -m venv --system-site-packages .edge_act_venv
+source .edge_act_venv/bin/activate
+pip install -r requirements.txt
+```
+
+### trtexec OOM / killed during engine build
+Enable swap and reduce optimization level:
+```bash
+sudo swapon /swapfile  # ensure swap is active
+/usr/src/tensorrt/bin/trtexec --onnx=model/model.onnx --saveEngine=model/act_policy.engine \
+    --fp16 --memPoolSize=workspace:256 --builderOptimizationLevel=1 --skipInference
+```
+
+### Permission denied on `/dev/ttyACM0`
+```bash
+sudo chmod 666 /dev/ttyACM0
+```
+
+### Camera device index wrong
+```bash
+cat /sys/class/video4linux/video*/name
+```
+RealSense uses 6 nodes; the USB camera is typically the next one after those.
+
+### No CSI camera detected
+MIPI CSI cameras need matching device tree overlays. The D-Robotics stereo module is not compatible with Jetson — use a USB camera instead.

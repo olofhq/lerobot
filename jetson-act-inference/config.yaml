@@ -5,13 +5,13 @@ model:
   onnx_path: "model/model.onnx"            # ONNX fallback
   preprocessor_path: "model/policy_preprocessor_step_3_normalizer_processor.safetensors"
   postprocessor_path: "model/policy_postprocessor_step_0_unnormalizer_processor.safetensors"
-  chunk_size: 100
+  chunk_size: 50
   action_dim: 6
 
 camera:
   front:
-    type: "csi"             # USB camera via V4L2 fallback
-    device: 6               # /dev/video6 (See3CAM_24CUG) - device index may differ on Jetson
+    type: "usb"             # USB camera via V4L2 (See3CAM_24CUG)
+    device: "/dev/see3cam"  # Stable udev symlink (see scripts/99-lerobot-devices.rules)
     width: 1280
     height: 720
     fps: 60
@@ -60,3 +60,5 @@ inference:
   temporal_ensemble_coeff: 0.01
   # ONNX input name for state
   state_input_name: "observation.state"
+  # Number of steps to interpolate when returning home on Ctrl+C
+  home_steps: 60

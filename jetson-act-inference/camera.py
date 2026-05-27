@@ -37,20 +37,40 @@ except ImportError:
 class RealSenseCamera:
     """Manages an Intel RealSense camera for RGB frame capture."""
 
-    def __init__(self, width: int = 640, height: int = 480, fps: int = 30):
+    def __init__(self, width: int = 640, height: int = 480, fps: int = 30,
+                 enable_depth: bool = False):
         if rs is None:
             raise ImportError("pyrealsense2 is required. Install with: pip install pyrealsense2")
         self.width = width
         self.height = height
         self.fps = fps
+        self.enable_depth = enable_depth
         self.pipeline = rs.pipeline()
         self.config = rs.config()
         self._started = False
 
-    def start(self) -> None:
-        """Start the camera stream."""
+    def start(self, max_attempts: int = 5, retry_delay: float = 2.0) -> None:
+        """Start the camera stream (retries if device not ready after boot)."""
         self.config.enable_stream(rs.stream.color, self.width, self.height, rs.format.rgb8, self.fps)
-        self.pipeline.start(self.config)
+        if self.enable_depth:
+            self.config.enable_stream(rs.stream.depth, self.width, self.height, rs.format.z16, self.fps)
+        for attempt in range(max_attempts):
+            try:
+                self.pipeline.start(self.config)
+                break
+            except RuntimeError as e:
+                if attempt < max_attempts - 1:
+                    print(f"RealSense start attempt {attempt+1}/{max_attempts} failed: {e}")
+                    print(f"  Retrying in {retry_delay}s (device may still be initializing)...")
+                    time.sleep(retry_delay)
+                    # Re-create pipeline/config in case internal state is dirty
+                    self.pipeline = rs.pipeline()
+                    self.config = rs.config()
+                    self.config.enable_stream(rs.stream.color, self.width, self.height, rs.format.rgb8, self.fps)
+                    if self.enable_depth:
+                        self.config.enable_stream(rs.stream.depth, self.width, self.height, rs.format.z16, self.fps)
+                else:
+                    raise
         self._started = True
         # Allow auto-exposure to settle
         for _ in range(30):
@@ -67,6 +87,29 @@ class RealSenseCamera:
         if not color_frame:
             raise RuntimeError("Failed to capture color frame")
         return np.asanyarray(color_frame.get_data())
+
+    def read_color_and_depth(self) -> tuple[np.ndarray, np.ndarray]:
+        """Capture both color and depth frames.
+
+        Returns:
+            color: (H, W, 3) uint8 RGB
+            depth: (H, W, 3) uint8 RGB (depth colorized to 3 channels)
+        """
+        frames = self.pipeline.wait_for_frames()
+        color_frame = frames.get_color_frame()
+        depth_frame = frames.get_depth_frame()
+        if not color_frame or not depth_frame:
+            raise RuntimeError("Failed to capture color+depth frames")
+
+        color = np.asanyarray(color_frame.get_data())
+
+        # Convert depth to 3-channel uint8 to match model input format
+        # Normalize depth to 0-255 range, replicate to 3 channels
+        depth_raw = np.asanyarray(depth_frame.get_data())  # uint16, mm
+        depth_norm = np.clip(depth_raw / 10.0, 0, 255).astype(np.uint8)  # ~10m max
+        depth_3ch = np.stack([depth_norm, depth_norm, depth_norm], axis=-1)
+
+        return color, depth_3ch
 
     def stop(self) -> None:
         """Stop the camera stream."""
@@ -85,8 +128,8 @@ class RealSenseCamera:
 class USBCamera:
     """USB camera via V4L2 with MJPG format."""
 
-    def __init__(self, device: int = 0, width: int = 1280, height: int = 720, fps: int = 60, flip: bool = False):
-        self.device = device
+    def __init__(self, device: int | str = 0, width: int = 1280, height: int = 720, fps: int = 60, flip: bool = False):
+        self.device = device  # int index (e.g. 0) or path (e.g. "/dev/see3cam")
         self.width = width
         self.height = height
         self.fps = fps
@@ -94,7 +137,6 @@ class USBCamera:
         self.cap = None
 
     def start(self) -> None:
-        _usb_reset(self.device)
         max_attempts = 5
         for attempt in range(max_attempts):
             self.cap = cv2.VideoCapture(self.device, cv2.CAP_V4L2)
