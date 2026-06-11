@@ -15,6 +15,7 @@
 ### Environments & Dependencies ###
 .env
 .venv
+*venv
 env/
 venv/
 env.bak/
@@ -86,6 +87,8 @@ pip-log.txt
 pip-delete-this-directory.txt
 celerybeat-schedule
 celerybeat.pid
+model/
+
 
 ### IDE & Editor Config ###
 # VS Code

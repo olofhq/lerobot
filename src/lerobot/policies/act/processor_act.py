@@ -20,6 +20,7 @@ import torch
 from lerobot.processor import (
     AddBatchDimensionProcessorStep,
     DeviceProcessorStep,
+    ImageCropResizeProcessorStep,
     NormalizerProcessorStep,
     PolicyAction,
     PolicyProcessorPipeline,
@@ -55,17 +56,24 @@ def make_act_pre_post_processors(
         pre-processor pipeline and the post-processor pipeline.
     """
 
-    input_steps = [
+    input_steps: list = [
         RenameObservationsProcessorStep(rename_map={}),
         AddBatchDimensionProcessorStep(),
         DeviceProcessorStep(device=config.device),
+    ]
+    if config.resize_shape is not None:
+        # Resize before normalization, after device placement so we resize on the
+        # training device. Inference (e.g. jetson-act-inference) must mirror this
+        # by resizing camera frames to the same (H, W) before feeding the model.
+        input_steps.append(ImageCropResizeProcessorStep(resize_size=tuple(config.resize_shape)))
+    input_steps.append(
         NormalizerProcessorStep(
             features={**config.input_features, **config.output_features},
             norm_map=config.normalization_mapping,
             stats=dataset_stats,
             device=config.device,
-        ),
-    ]
+        )
+    )
     output_steps = [
         UnnormalizerProcessorStep(
             features=config.output_features, norm_map=config.normalization_mapping, stats=dataset_stats

@@ -16,6 +16,7 @@ import signal
 import time
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from camera import CSICamera, RealSenseCamera, USBCamera
@@ -76,6 +77,49 @@ def return_to_home(motor_bus: FeetechMotorBus, joint_order: list[str],
     print("Position reached.")
 
 
+def build_camera_preview(frames: dict[str, np.ndarray], cam_configs: dict[str, dict]) -> np.ndarray:
+    """Build a side-by-side preview panel (raw + model-input) for all cameras.
+
+    Args:
+        frames: input_name -> uint8 RGB frame straight from the camera.
+        cam_configs: input_name -> camera config dict (with model height/width).
+
+    Returns:
+        BGR image suitable for cv2.imshow.
+    """
+    panels = []
+    for input_name, frame_rgb in frames.items():
+        cam_cfg = cam_configs[input_name]
+        model_h = cam_cfg.get("model_height", cam_cfg["height"])
+        model_w = cam_cfg.get("model_width", cam_cfg["width"])
+
+        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        h, w = frame_bgr.shape[:2]
+        scale = min(480 / h, 640 / w)
+        display_raw = cv2.resize(frame_bgr, (int(w * scale), int(h * scale)))
+
+        cropped = cv2.resize(frame_bgr, (model_w, model_h), interpolation=cv2.INTER_LINEAR)
+        disp_h = display_raw.shape[0]
+        crop_scale = disp_h / model_h
+        display_crop = cv2.resize(cropped, (int(model_w * crop_scale), disp_h))
+
+        cv2.putText(display_raw, f"{input_name} raw ({w}x{h})",
+                    (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(display_crop, f"{input_name} model ({model_w}x{model_h})",
+                    (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+        panels.append(np.hstack([display_raw, display_crop]))
+
+    max_w = max(p.shape[1] for p in panels)
+    padded = []
+    for p in panels:
+        if p.shape[1] < max_w:
+            pad = np.zeros((p.shape[0], max_w - p.shape[1], 3), dtype=np.uint8)
+            p = np.hstack([p, pad])
+        padded.append(p)
+    return np.vstack(padded)
+
+
 def build_session(cfg: dict):
     """Build inference session: TensorRT engine if available, else ONNX Runtime."""
     engine_path = cfg["model"].get("engine_path", "")
@@ -107,6 +151,11 @@ def main():
     parser = argparse.ArgumentParser(description="ACT policy inference on Jetson Orin Nano")
     parser.add_argument("--config", default="config.yaml", help="Path to config YAML")
     parser.add_argument("--dry-run", action="store_true", help="Skip motor writes (camera + model only)")
+    parser.add_argument(
+        "--show-cameras",
+        action="store_true",
+        help="Display camera feeds (raw + model input) in a window. Press 'q' to quit.",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -223,13 +272,18 @@ def main():
 
             # 1. Capture frames from all cameras
             feeds: dict[str, np.ndarray] = {}
+            raw_frames: dict[str, np.ndarray] = {}
             for input_name, cam_cfg in cam_configs.items():
                 if args.dry_run:
                     frame = np.zeros((cam_cfg["height"], cam_cfg["width"], 3), dtype=np.uint8)
                 else:
                     frame = cameras[input_name].read()  # (H, W, 3) uint8 RGB
+                if args.show_cameras:
+                    raw_frames[input_name] = frame
+                model_h = cam_cfg.get("model_height", cam_cfg["height"])
+                model_w = cam_cfg.get("model_width", cam_cfg["width"])
                 feeds[input_name] = preprocessor.preprocess_image(
-                    frame, input_name, cam_cfg["height"], cam_cfg["width"],
+                    frame, input_name, model_h, model_w,
                 )
 
             # 2. Read motor positions
@@ -257,6 +311,13 @@ def main():
             # 7. Write to motors
             if not args.dry_run:
                 motor_bus.write_normalized(action, joint_order)
+
+            # 7b. Optional camera preview
+            if args.show_cameras and raw_frames:
+                preview = build_camera_preview(raw_frames, cam_configs)
+                cv2.imshow("Camera Preview (q to quit)", preview)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    running = False
 
             # 8. Maintain loop rate
             elapsed = time.monotonic() - t_start
@@ -286,6 +347,8 @@ def main():
                 motor_bus.disconnect()
             except Exception as e:
                 print(f"Warning: motor disconnect failed: {e}")
+        if args.show_cameras:
+            cv2.destroyAllWindows()
         print("Shutdown complete.")
 
 

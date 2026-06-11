@@ -5,7 +5,7 @@ model:
   onnx_path: "model/model.onnx"            # ONNX fallback
   preprocessor_path: "model/policy_preprocessor_step_3_normalizer_processor.safetensors"
   postprocessor_path: "model/policy_postprocessor_step_0_unnormalizer_processor.safetensors"
-  chunk_size: 100
+  chunk_size: 50
   action_dim: 6
 
 camera:
@@ -20,16 +20,16 @@ camera:
     # Optional: resize captured frame to this size before feeding the model.
     # MUST match `policy.resize_shape` used at training time. If omitted, the
     # frame is fed at the camera resolution (i.e. width/height above).
-    model_width: 320
-    model_height: 240
+    model_width: 1280
+    model_height: 720
   wrist:
     type: "realsense"       # Intel RealSense
     width: 640
     height: 480
     fps: 30
     input_name: "observation.images.wrist"
-    model_width: 320
-    model_height: 240
+    model_width: 640
+    model_height: 480
 
 motors:
   port: "/dev/ttyACM0"

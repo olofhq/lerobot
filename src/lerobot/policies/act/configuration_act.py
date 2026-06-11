@@ -16,6 +16,7 @@
 from dataclasses import dataclass, field
 
 from lerobot.configs import NormalizationMode, PreTrainedConfig
+from lerobot.configs.types import PolicyFeature
 from lerobot.optim import AdamWConfig
 
 
@@ -118,6 +119,13 @@ class ACTConfig(PreTrainedConfig):
     # Note: the value used in ACT when temporal ensembling is enabled is 0.01.
     temporal_ensemble_coeff: float | None = None
 
+    # Image preprocessing. If set as (H, W), all observation.images.* are resized
+    # (bilinear) to this shape before normalization, both at training and at
+    # inference time. The same value is applied via the saved processor pipeline,
+    # and image_features shapes are overridden to (C, H, W) so ONNX export uses
+    # the resized dimensions. Leave as None to keep the dataset's native shape.
+    resize_shape: tuple[int, int] | None = None
+
     # Training and loss computation.
     dropout: float = 0.1
     kl_weight: float = 10.0
@@ -162,6 +170,17 @@ class ACTConfig(PreTrainedConfig):
     def validate_features(self) -> None:
         if not self.image_features and not self.env_state_feature:
             raise ValueError("You must provide at least one image or the environment state among the inputs.")
+
+        if self.resize_shape is not None:
+            h, w = self.resize_shape
+            if h <= 0 or w <= 0:
+                raise ValueError(f"`resize_shape` must be positive (H, W), got {self.resize_shape}.")
+            # Override image input shapes so the model, the saved config, and
+            # ONNX export all see the post-resize dimensions.
+            for key in list(self.image_features.keys()):
+                feat = self.input_features[key]
+                channels = feat.shape[0]
+                self.input_features[key] = PolicyFeature(type=feat.type, shape=(channels, h, w))
 
     @property
     def observation_delta_indices(self) -> None:
