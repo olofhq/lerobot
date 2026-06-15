@@ -33,12 +33,13 @@ Recording modes:
     ``record_autonomous=False``: Only correction windows are recorded.
         Each correction (start to stop) becomes one episode.
 
-Teleoperator expectations:
-    The user is responsible for keeping the leader arm aligned with the
-    follower arm at the moment a correction begins.  Programmatic motor
-    handover (``enable_torque`` / ``disable_torque`` / ``write_goal_positions``)
-    is intentionally not invoked here — see the TODO in
-    :func:`DAggerStrategy._apply_transition` for the open design decision.
+Teleoperator handover:
+    On AUTONOMOUS → PAUSED, actuated teleops (those with non-empty
+    ``feedback_features``, e.g. SO-101, OpenArmMini) are smoothly driven to
+    the follower's last position via ``send_feedback`` so the operator takes
+    over without a jerk.  Non-actuated teleops cannot be driven,
+    so on PAUSED → CORRECTING the follower is instead slid to the teleop's
+    current pose before the correction begins.
 """
 
 from __future__ import annotations
@@ -55,10 +56,14 @@ from typing import Any
 
 import numpy as np
 
-from lerobot.common.control_utils import is_headless
+from lerobot.common.control_utils import (
+    follower_smooth_move_to,
+    is_headless,
+    teleop_smooth_move_to,
+    teleop_supports_feedback,
+)
 from lerobot.datasets import VideoEncodingManager
 from lerobot.datasets.utils import DEFAULT_VIDEO_FILE_SIZE_IN_MB
-from lerobot.teleoperators import Teleoperator
 from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.utils.feature_utils import build_dataset_frame
 from lerobot.utils.import_utils import _pynput_available
@@ -68,7 +73,6 @@ from lerobot.utils.utils import log_say
 
 from ..configs import DAggerKeyboardConfig, DAggerPedalConfig, DAggerStrategyConfig
 from ..context import RolloutContext
-from ..robot_wrapper import ThreadSafeRobot
 from .core import RolloutStrategy, estimate_max_episode_seconds, safe_push_to_hub, send_next_action
 
 PYNPUT_AVAILABLE = _pynput_available
@@ -168,39 +172,6 @@ class DAggerEvents:
             self._phase = DAggerPhase.AUTONOMOUS
             self._pending_transition = None
         self.upload_requested.clear()
-
-
-# ---------------------------------------------------------------------------
-# Teleoperator helpers
-# ---------------------------------------------------------------------------
-
-
-# TODO(Steven): re-enable programmatic teleop alignment once we decide whether
-# to enforce motor-control methods on every Teleoperator.  Until then the user
-# is responsible for moving the leader arm to the follower's pose at the moment
-# a correction begins.
-def _teleop_smooth_move_to(
-    teleop: Teleoperator, target_pos: dict, duration_s: float = 2.0, fps: int = 50
-) -> None:
-    """Smoothly move teleop to target position via linear interpolation.
-
-    Requires the teleoperator to support motor control methods
-    (``enable_torque``, ``write_goal_positions``, ``get_action``).
-    """
-    teleop.enable_torque()
-    current = teleop.get_action()
-    steps = max(int(duration_s * fps), 1)
-
-    for step in range(steps + 1):
-        t = step / steps
-        interp = {}
-        for k in current:
-            if k in target_pos:
-                interp[k] = current[k] * (1 - t) + target_pos[k] * t
-            else:
-                interp[k] = current[k]
-        teleop.write_goal_positions(interp)
-        time.sleep(1 / fps)
 
 
 # ---------------------------------------------------------------------------
@@ -415,9 +386,6 @@ class DAggerStrategy(RolloutStrategy):
         engine.reset()
         interpolator.reset()
         events.reset()
-        # TODO(Steven): re-enable once Teleoperator motor-control methods are
-        # standardised; until then the user pre-aligns the leader by hand.
-        # teleop.disable_torque()
         engine.resume()
 
         last_action: dict[str, Any] | None = None
@@ -441,8 +409,16 @@ class DAggerStrategy(RolloutStrategy):
                     transition = events.consume_transition()
                     if transition is not None:
                         old_phase, new_phase = transition
-                        self._apply_transition(old_phase, new_phase, engine, interpolator, robot, teleop)
-                        last_action = None
+                        self._apply_transition(
+                            old_phase,
+                            new_phase,
+                            engine,
+                            interpolator,
+                            ctx,
+                            last_action,
+                        )
+                        if new_phase == DAggerPhase.AUTONOMOUS:
+                            last_action = None
 
                     phase = events.phase
                     obs = robot.get_observation()
@@ -532,9 +508,6 @@ class DAggerStrategy(RolloutStrategy):
             finally:
                 logger.info("DAgger continuous control loop ended — pausing engine")
                 engine.pause()
-                # TODO(Steven): re-enable once Teleoperator motor-control methods
-                # are standardised across all teleop implementations.
-                # teleop.disable_torque()
                 with contextlib.suppress(Exception):
                     with self._episode_lock:
                         dataset.save_episode()
@@ -570,9 +543,6 @@ class DAggerStrategy(RolloutStrategy):
         engine.reset()
         interpolator.reset()
         events.reset()
-        # TODO(Steven): re-enable once Teleoperator motor-control methods are
-        # standardised; until then the user pre-aligns the leader by hand.
-        # teleop.disable_torque()
         engine.resume()
 
         last_action: dict[str, Any] | None = None
@@ -603,8 +573,16 @@ class DAggerStrategy(RolloutStrategy):
                     transition = events.consume_transition()
                     if transition is not None:
                         old_phase, new_phase = transition
-                        self._apply_transition(old_phase, new_phase, engine, interpolator, robot, teleop)
-                        last_action = None
+                        self._apply_transition(
+                            old_phase,
+                            new_phase,
+                            engine,
+                            interpolator,
+                            ctx,
+                            last_action,
+                        )
+                        if new_phase == DAggerPhase.AUTONOMOUS:
+                            last_action = None
 
                         # Correction ended -> defer save (wait for user to confirm or discard)
                         if old_phase == DAggerPhase.CORRECTING and new_phase == DAggerPhase.PAUSED:
@@ -710,9 +688,6 @@ class DAggerStrategy(RolloutStrategy):
             finally:
                 logger.info("DAgger corrections-only loop ended — pausing engine")
                 engine.pause()
-                # TODO(Steven): re-enable once Teleoperator motor-control methods
-                # are standardised across all teleop implementations.
-                # teleop.disable_torque()
                 with contextlib.suppress(Exception):
                     with self._episode_lock:
                         dataset.save_episode()
@@ -729,35 +704,70 @@ class DAggerStrategy(RolloutStrategy):
         new_phase: DAggerPhase,
         engine,
         interpolator,
-        robot: ThreadSafeRobot,
-        teleop: Teleoperator,
+        ctx: RolloutContext,
+        prev_action: dict | None,
     ) -> None:
-        """Execute side-effects for a validated phase transition."""
+        """Execute side-effects for a validated phase transition, including smooth handovers.
+
+        AUTONOMOUS -> PAUSED (actuated teleop):
+            Pause the engine, then drive the leader arm to the follower's last
+            commanded position so the operator takes over without a jerk.
+
+        PAUSED -> CORRECTING (non-actuated teleop):
+            Slide the follower to the teleop's current pose so the robot meets
+            the operator's hand rather than jumping to it on the first frame.
+
+        CORRECTING -> PAUSED (actuated teleop):
+            Re-enable torque to hold position after correction.
+            This will be potentially useful if cancelling the correction recording
+
+        PAUSED -> AUTONOMOUS:
+            Reset and resume the inference engine.
+        """
+        teleop = ctx.hardware.teleop
+        robot = ctx.hardware.robot_wrapper
+
         logger.info("Phase transition: %s -> %s", old_phase.value, new_phase.value)
         if old_phase == DAggerPhase.AUTONOMOUS and new_phase == DAggerPhase.PAUSED:
-            logger.info("Pausing engine — robot holds position")
+            logger.info("Pausing engine - robot holds position")
             engine.pause()
-            obs = robot.get_observation()
-            _robot_pos = {
-                k: v for k, v in obs.items() if k.endswith(".pos") and k in robot.observation_features
-            }
-            # TODO(Steven): once Teleoperator motor-control methods are
-            # standardised, drive the leader to the follower's pose here so the
-            # operator does not need to pre-align the arm by hand.  Until then
-            # the user is responsible for the alignment.
-            _teleop_smooth_move_to(teleop, _robot_pos, duration_s=2.0, fps=50)
 
-        elif new_phase == DAggerPhase.CORRECTING:
-            logger.info("Entering correction mode — human teleop control")
-            # TODO(Steven): re-enable once Teleoperator motor-control methods
-            # are standardised across all teleop implementations.
-            teleop.disable_torque()
+            if teleop_supports_feedback(teleop) and prev_action is not None:
+                # TODO(Maxime): prev_action is in robot action key space (output of robot_action_processor).
+                # send_feedback expects teleop feedback key space. For homogeneous setups (e.g. SO-101
+                # leader + SO-101 follower) the keys are identical so this works. If the processor pipeline
+                # does non-trivial key renaming (e.g. a rename_map on action keys), the interpolation in
+                # teleop_smooth_move_to silently no-ops and the arm doesn't move.
+                logger.info("Smooth handover: moving leader arm to follower position")
+                teleop_smooth_move_to(teleop, prev_action)
+
+        elif old_phase == DAggerPhase.PAUSED and new_phase == DAggerPhase.CORRECTING:
+            logger.info("Entering correction mode - human teleop control")
+            if not teleop_supports_feedback(teleop) and prev_action is not None:
+                logger.info("Smooth handover: sliding follower to teleop position")
+                obs = robot.get_observation()
+                teleop_action = teleop.get_action()
+                processed = ctx.processors.teleop_action_processor((teleop_action, obs))
+                target = ctx.processors.robot_action_processor((processed, obs))
+                follower_smooth_move_to(robot, prev_action, target)
+
+            # unlock the teleop for human control
+            if teleop_supports_feedback(teleop):
+                teleop.disable_torque()
+
+        elif old_phase == DAggerPhase.CORRECTING and new_phase == DAggerPhase.PAUSED:
+            if teleop_supports_feedback(teleop):
+                teleop.enable_torque()
 
         elif new_phase == DAggerPhase.AUTONOMOUS:
-            logger.info("Resuming autonomous mode — resetting engine and interpolator")
+            logger.info("Resuming autonomous mode - resetting engine and interpolator")
             interpolator.reset()
             engine.reset()
             engine.resume()
+
+            # release teleop before resuming the policy
+            if teleop_supports_feedback(teleop):
+                teleop.disable_torque()
 
     # ------------------------------------------------------------------
     # Background push (shared by both modes)
