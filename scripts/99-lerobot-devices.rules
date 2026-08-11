@@ -16,3 +16,8 @@ SUBSYSTEM=="video4linux", ATTRS{idVendor}=="8086", ATTRS{idProduct}=="0b5b", ATT
 
 # NVIDIA Jetson Orin Nano → /dev/jetson
 SUBSYSTEM=="tty", ATTRS{idVendor}=="0955", ATTRS{idProduct}=="7020", ATTRS{serial}=="1421223019146", SYMLINK+="jetson"
+
+# PCsensor FootSwitch pedal - grant read/write to all users (all 3 interfaces)
+SUBSYSTEM=="input", ATTRS{name}=="PCsensor FootSwitch Keyboard", MODE="0666"
+SUBSYSTEM=="input", ATTRS{name}=="PCsensor FootSwitch Mouse", MODE="0666"
+SUBSYSTEM=="input", ATTRS{name}=="PCsensor FootSwitch", MODE="0666"

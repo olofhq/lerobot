@@ -11,7 +11,7 @@ usage() {
     echo ""
     echo "Optional:"
     echo "  --robot-port         Robot serial port (default: /dev/follower_arm)"
-    echo "  --robot-id           Robot ID (default: thing)"
+    echo "  --robot-id           Robot ID (default: rake2)"
     echo "  --repo-id            Dataset repo ID (default: tee_usbc/rollout_temp)"
     echo "  --task               Single task description (default: Pick tee)"
     echo "  --camera-index       Front camera device index or path (default: /dev/see3cam)"
@@ -22,12 +22,14 @@ usage() {
     echo "  --display-data       Display data (default: true)"
     echo "  --push-to-hub        Push to hub (default: False)"
     echo "  --play-sounds        Play sounds (default: False)"
+    echo "  --n-action-steps     Policy action steps (default: 1)"
+    echo "  --temporal-ensemble-coeff  Temporal ensemble coefficient (default: 0.01)"
     exit 1
 }
 
 # Defaults
 ROBOT_PORT="/dev/follower_arm"
-ROBOT_ID="thing"
+ROBOT_ID="rake2"
 REPO_ID="tee_usbc/rollout_temp"
 TASK="Pick tee"
 CAMERA_INDEX="/dev/see3cam"
@@ -38,6 +40,8 @@ REALSENSE_SERIAL="353322270661"
 DISPLAY_DATA="true"
 PUSH_TO_HUB="False"
 PLAY_SOUNDS="False"
+N_ACTION_STEPS=1
+TEMPORAL_ENSEMBLE_COEFF=0.01
 POLICY_PATH=""
 EXTRA_ARGS=()
 
@@ -56,6 +60,8 @@ while [[ $# -gt 0 ]]; do
         --display-data)      DISPLAY_DATA="$2"; shift 2 ;;
         --push-to-hub)       PUSH_TO_HUB="$2"; shift 2 ;;
         --play-sounds)       PLAY_SOUNDS="$2"; shift 2 ;;
+        --n-action-steps)    N_ACTION_STEPS="$2"; shift 2 ;;
+        --temporal-ensemble-coeff) TEMPORAL_ENSEMBLE_COEFF="$2"; shift 2 ;;
         -h|--help)           usage ;;
         *)                   EXTRA_ARGS+=("$1"); shift ;;
     esac
@@ -81,5 +87,7 @@ exec lerobot-rollout \
     --dataset.push_to_hub="$PUSH_TO_HUB" \
     --play_sounds="$PLAY_SOUNDS" \
     --policy.path="$POLICY_PATH" \
+    --policy.n_action_steps="$N_ACTION_STEPS" \
+    --policy.temporal_ensemble_coeff="$TEMPORAL_ENSEMBLE_COEFF" \
     --dataset.repo_id="$REPO_ID" \
     "${EXTRA_ARGS[@]}"

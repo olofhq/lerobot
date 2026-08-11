@@ -9,7 +9,7 @@ usage() {
     echo ""
     echo "Optional:"
     echo "  --robot-port         Robot serial port (default: /dev/follower_arm)"
-    echo "  --robot-id           Robot ID (default: thing)"
+    echo "  --robot-id           Robot ID (default: biggie)"
     echo "  --teleop-port        Teleop serial port (default: /dev/leader_arm)"
     echo "  --teleop-id          Teleop ID (default: it)"
     echo "  --task               Single task description (default: Pick tee)"
@@ -30,7 +30,7 @@ usage() {
 
 # Defaults
 ROBOT_PORT="/dev/follower_arm"
-ROBOT_ID="thing"
+ROBOT_ID="biggie"
 TELEOP_PORT="/dev/leader_arm"
 TELEOP_ID="it"
 TASK="Pick tee"
