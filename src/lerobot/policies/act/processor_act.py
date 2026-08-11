@@ -18,18 +18,12 @@ from typing import Any
 import torch
 
 from lerobot.processor import (
-    AddBatchDimensionProcessorStep,
-    DeviceProcessorStep,
     ImageCropResizeProcessorStep,
-    NormalizerProcessorStep,
     PolicyAction,
     PolicyProcessorPipeline,
-    RenameObservationsProcessorStep,
-    UnnormalizerProcessorStep,
-    policy_action_to_transition,
-    transition_to_policy_action,
+    make_default_policy_processor_steps,
+    make_policy_processor_pipelines,
 )
-from lerobot.utils.constants import POLICY_POSTPROCESSOR_DEFAULT_NAME, POLICY_PREPROCESSOR_DEFAULT_NAME
 
 from .configuration_act import ACTConfig
 
@@ -55,41 +49,17 @@ def make_act_pre_post_processors(
         tuple[PolicyProcessorPipeline[dict[str, Any], dict[str, Any]], PolicyProcessorPipeline[PolicyAction, PolicyAction]]: A tuple containing the
         pre-processor pipeline and the post-processor pipeline.
     """
+    s = make_default_policy_processor_steps(config, dataset_stats, normalizer_device=config.device)
 
-    input_steps: list = [
-        RenameObservationsProcessorStep(rename_map={}),
-        AddBatchDimensionProcessorStep(),
-        DeviceProcessorStep(device=config.device),
-    ]
+    input_steps: list = [s.rename_observations, s.add_batch_dim, s.to_device]
     if config.resize_shape is not None:
         # Resize before normalization, after device placement so we resize on the
         # training device. Inference (e.g. jetson-act-inference) must mirror this
         # by resizing camera frames to the same (H, W) before feeding the model.
         input_steps.append(ImageCropResizeProcessorStep(resize_size=tuple(config.resize_shape)))
-    input_steps.append(
-        NormalizerProcessorStep(
-            features={**config.input_features, **config.output_features},
-            norm_map=config.normalization_mapping,
-            stats=dataset_stats,
-            device=config.device,
-        )
-    )
-    output_steps = [
-        UnnormalizerProcessorStep(
-            features=config.output_features, norm_map=config.normalization_mapping, stats=dataset_stats
-        ),
-        DeviceProcessorStep(device="cpu"),
-    ]
+    input_steps.append(s.normalize)
 
-    return (
-        PolicyProcessorPipeline[dict[str, Any], dict[str, Any]](
-            steps=input_steps,
-            name=POLICY_PREPROCESSOR_DEFAULT_NAME,
-        ),
-        PolicyProcessorPipeline[PolicyAction, PolicyAction](
-            steps=output_steps,
-            name=POLICY_POSTPROCESSOR_DEFAULT_NAME,
-            to_transition=policy_action_to_transition,
-            to_output=transition_to_policy_action,
-        ),
+    return make_policy_processor_pipelines(
+        input_steps=input_steps,
+        output_steps=[s.unnormalize, s.to_cpu],
     )
