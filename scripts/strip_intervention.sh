@@ -2,12 +2,17 @@
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-    echo "Usage: $0 <dataset-name>"
+    echo "Usage: $0 <dataset-name-or-path>"
     echo "Example: $0 rollout_hil"
+    echo "Example: $0 /tmp/my_dataset_root"
     exit 1
 fi
 
-DATASET_ROOT="$HOME/.cache/huggingface/lerobot/tee_usbc/$1"
+if [[ -d "$1" ]]; then
+    DATASET_ROOT="$1"
+else
+    DATASET_ROOT="$HOME/.cache/huggingface/lerobot/$1"
+fi
 
 if [[ ! -d "$DATASET_ROOT" ]]; then
     echo "Error: dataset not found at $DATASET_ROOT"
