@@ -117,7 +117,7 @@ exec lerobot-rollout \
     --teleop.type=so101_leader \
     --teleop.port="$TELEOP_PORT" \
     --teleop.id="$TELEOP_ID" \
-    --robot.cameras="{front: {type: opencv, index_or_path: '$CAMERA_INDEX', width: $CAMERA_WIDTH, height: $CAMERA_HEIGHT, fps: $CAMERA_FPS, fourcc: MJPG, rotation: 180}, wrist: {type: intelrealsense, use_depth: true, width: 640, height: 480, fps: 30, serial_number_or_name: $REALSENSE_SERIAL}}" \
+    --robot.cameras="{front: {type: opencv, index_or_path: '$CAMERA_INDEX', width: $CAMERA_WIDTH, height: $CAMERA_HEIGHT, fps: $CAMERA_FPS, fourcc: MJPG, rotation: 180}, wrist: {type: intelrealsense, use_depth: false, width: 640, height: 480, fps: 30, serial_number_or_name: $REALSENSE_SERIAL}}" \
     --display_data="$DISPLAY_DATA" \
     --dataset.single_task="$TASK" \
     --dataset.push_to_hub="$PUSH_TO_HUB" \
